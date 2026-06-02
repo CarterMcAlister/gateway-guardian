@@ -15,41 +15,14 @@ Run the CLI through uv with `uv run python scripts/gateway_guardian.py`. The ser
 - **Optional alerts** — supports notification settings in config
 - **Optional local LLM repair** — Codex or Claude can attempt last-resort repair when explicitly enabled
 
-## Python and uv
-
-This repository is a uv-managed Python project. Gateway Guardian requires Python 3.11 or newer and has no runtime dependencies outside the standard library.
-
-```bash
-uv sync
-uv run python scripts/gateway_guardian.py --help
-uv run python -m unittest tests.gateway_guardian_tests
-```
-
-Use `uv run python scripts/gateway_guardian.py ...` for local development and setup so the service is installed from the same Python environment.
-
-## How It Works
-
-```text
-uv run python scripts/gateway_guardian.py run
-        |
-        v
-read ~/.config/gateway-guardian/config.toml
-        |
-        v
-start one isolated worker per enabled profile
-        |
-        v
-health check every 300s by default
-        |
-        v
-doctor repair -> rollback -> optional local LLM repair -> profile cooldown
-```
-
-The default healthy check interval is `300` seconds. Set `default_check_interval_seconds` globally, or `check_interval_seconds` on a profile to override it for that profile.
-
 ## Quick Start
 
-Want an agent to do it for you? Paste a link to `references/setup.md` into your agent and ask them to set up Gateway Guardian for your Hermes or OpenClaw profiles.
+Want an agent to do it for you? Send this to your agent:
+```
+Read https://raw.githubusercontent.com/CarterMcAlister/gateway-guardian/refs/heads/main/references/setup.md and set it up for me
+```
+
+### Manual Setup
 
 Initialize git in the profile workspace before enabling rollback:
 
@@ -75,6 +48,39 @@ uv run python scripts/gateway_guardian.py setup \
 
 uv run python scripts/gateway_guardian.py status
 ```
+
+## How It Works
+
+```text
+uv run python scripts/gateway_guardian.py run
+        |
+        v
+read ~/.config/gateway-guardian/config.toml
+        |
+        v
+start one isolated worker per enabled profile
+        |
+        v
+health check every 300s by default
+        |
+        v
+doctor repair -> rollback -> optional local LLM repair -> profile cooldown
+```
+
+The default healthy check interval is `300` seconds. Set `default_check_interval_seconds` globally, or `check_interval_seconds` on a profile to override it for that profile.
+
+
+## Python and uv
+
+This repository is a uv-managed Python project. Gateway Guardian requires Python 3.11 or newer and has no runtime dependencies outside the standard library.
+
+```bash
+uv sync
+uv run python scripts/gateway_guardian.py --help
+uv run python -m unittest tests.gateway_guardian_tests
+```
+
+Use `uv run python scripts/gateway_guardian.py ...` for local development and setup so the service is installed from the same Python environment.
 
 ## CLI Reference
 
@@ -209,3 +215,7 @@ Supervisor and profile logs live under the configured `log_dir`, with per-profil
 ## License
 
 MIT
+
+## Credits
+
+Inspired by [Openclaw Guardian](https://github.com/LeoYeAI/openclaw-guardian)
