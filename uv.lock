@@ -8,5 +8,5 @@ exclude-newer-span = "P1W"
 
 [[package]]
 name = "gateway-guardian"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }

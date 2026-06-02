@@ -1,6 +1,6 @@
 [project]
 name = "gateway-guardian"
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-profile Gateway Guardian supervisor for Hermes and OpenClaw."
 readme = "README.md"
 requires-python = ">=3.11"
