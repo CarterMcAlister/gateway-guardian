@@ -6,5 +6,18 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+gateway-guardian = "gateway_guardian:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.uv]
-package = false
+package = true
+
+[tool.hatch.build.targets.wheel]
+include = [
+  "gateway_guardian",
+  "scripts/gateway_guardian.py",
+]

@@ -167,6 +167,50 @@ class GatewayGuardianTestCase(unittest.TestCase):
         )
         return script
 
+    def write_hermes_gateway_target(self, name):
+        script = self.bin / name
+        write_executable(
+            script,
+            """\
+            #!/usr/bin/env python3
+            import os, sys
+            cwd = os.getcwd()
+            with open(os.path.join(cwd, f"{os.path.basename(sys.argv[0])}.argv"), "a", encoding="utf-8") as fh:
+                fh.write(" ".join(sys.argv[1:]) + "\\n")
+            if "gateway" in sys.argv and "status" in sys.argv:
+                if os.path.exists(os.path.join(cwd, "healthy")):
+                    print("✓ Gateway service is loaded")
+                    print('"PID" = 1234;')
+                    sys.exit(0)
+                if os.path.exists(os.path.join(cwd, "stale_service")):
+                    print("⚠ Service definition is stale relative to the current Hermes install")
+                    print("  Run: hermes gateway start")
+                    print("✓ Gateway service is loaded")
+                    sys.exit(0)
+                if os.path.exists(os.path.join(cwd, "secrets_failed")):
+                    print("agent-secrets: agent-secrets exited 1: export failed: ANTHROPIC_API_KEY")
+                    print("✓ Gateway service is loaded")
+                    sys.exit(0)
+                print("Gateway service is not running")
+                sys.exit(1)
+            if "doctor" in sys.argv:
+                sys.exit(1)
+            if "gateway" in sys.argv and "start" in sys.argv:
+                for marker in ("stale_service", "secrets_failed"):
+                    try:
+                        os.unlink(os.path.join(cwd, marker))
+                    except FileNotFoundError:
+                        pass
+                with open(os.path.join(cwd, "healthy"), "w", encoding="utf-8") as fh:
+                    fh.write("1")
+                sys.exit(0)
+            if "status" in sys.argv:
+                sys.exit(0 if os.path.exists(os.path.join(cwd, "healthy")) else 1)
+            sys.exit(0)
+            """,
+        )
+        return script
+
     def worker_command_name(self):
         for name in ("__worker", "_worker"):
             proc = subprocess.run(
@@ -475,7 +519,7 @@ class GatewayGuardianConfigTests(GatewayGuardianTestCase):
 class GatewayGuardianWorkerTests(GatewayGuardianTestCase):
     def test_worker_once_creates_isolated_state_dirs_logs_and_records_last_good_commits(self):
         self.write_fake_git()
-        hermes = self.write_fake_target("hermes")
+        hermes = self.write_hermes_gateway_target("hermes")
         openclaw = self.write_fake_target("openclaw")
         hermes_workspace = self.init_workspace("hermes-prod", head="hermes-good")
         openclaw_workspace = self.init_workspace("openclaw-stage", head="openclaw-good")
@@ -512,6 +556,68 @@ class GatewayGuardianWorkerTests(GatewayGuardianTestCase):
         self.assertTrue((hermes_state / "repair.log").exists())
         self.assertTrue((openclaw_state / "repair.log").exists())
         self.assertNotEqual(hermes_state, openclaw_state)
+        hermes_calls = (hermes_workspace / "hermes.argv").read_text(encoding="utf-8")
+        openclaw_calls = (openclaw_workspace / "openclaw.argv").read_text(encoding="utf-8")
+        self.assertIn("--profile prod gateway status --deep", hermes_calls)
+        self.assertIn("--profile stage status", openclaw_calls)
+        self.assertNotIn("--profile stage gateway status --deep", openclaw_calls)
+
+    def test_hermes_stale_service_status_triggers_gateway_start_repair(self):
+        self.write_fake_git()
+        hermes = self.write_hermes_gateway_target("hermes")
+        workspace = self.init_workspace("hermes-prod", head="good", healthy=False)
+        (workspace / "stale_service").write_text("1", encoding="utf-8")
+        self.write_config(
+            [
+                {
+                    "id": "hermes-prod",
+                    "target": "hermes",
+                    "profile": "prod",
+                    "workspace": str(workspace),
+                    "command": str(hermes),
+                    "args": ["--profile", "prod"],
+                    "rollback_enabled": False,
+                }
+            ]
+        )
+
+        self.run_worker_once("hermes-prod")
+
+        calls = (workspace / "hermes.argv").read_text(encoding="utf-8")
+        self.assertIn("--profile prod gateway status --deep", calls)
+        self.assertIn("--profile prod doctor --fix", calls)
+        self.assertIn("--profile prod gateway start", calls)
+        self.assertTrue((workspace / "healthy").exists())
+        state = self.state_home / "gateway-guardian" / "profiles" / "hermes-prod"
+        self.assertEqual((state / "notification-status").read_text(encoding="utf-8").strip(), "healthy")
+
+    def test_hermes_agent_secrets_failure_is_unhealthy_even_with_zero_exit(self):
+        self.write_fake_git()
+        hermes = self.write_hermes_gateway_target("hermes")
+        workspace = self.init_workspace("hermes-prod", head="good", healthy=False)
+        (workspace / "secrets_failed").write_text("1", encoding="utf-8")
+        self.write_config(
+            [
+                {
+                    "id": "hermes-prod",
+                    "target": "hermes",
+                    "profile": "prod",
+                    "workspace": str(workspace),
+                    "command": str(hermes),
+                    "args": ["--profile", "prod"],
+                    "rollback_enabled": False,
+                }
+            ]
+        )
+
+        self.run_worker_once("hermes-prod")
+
+        state = self.state_home / "gateway-guardian" / "profiles" / "hermes-prod"
+        log = (state / "repair.log").read_text(encoding="utf-8")
+        calls = (workspace / "hermes.argv").read_text(encoding="utf-8")
+        self.assertIn("agent-secrets exited 1", log)
+        self.assertIn("hermes gateway health failed: agent-secrets exited 1", log)
+        self.assertIn("--profile prod gateway start", calls)
 
     def test_daily_backup_marker_is_not_updated_after_failed_commit(self):
         self.write_fake_git()

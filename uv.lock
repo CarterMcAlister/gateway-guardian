@@ -9,4 +9,4 @@ exclude-newer-span = "P1W"
 [[package]]
 name = "gateway-guardian"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }

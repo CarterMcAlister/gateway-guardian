@@ -2,13 +2,13 @@
 
 Gateway Guardian is a standalone supervisor for local gateway profiles. It supports Hermes and OpenClaw profiles from one CLI, one TOML config file, and one background service.
 
-Run the CLI through uv with `uv run python scripts/gateway_guardian.py`. The service reads `~/.config/gateway-guardian/config.toml` and monitors every enabled profile. Each profile keeps isolated state, logs, repair attempts, rollback metadata, cooldowns, and optional LLM repair output.
+Install the CLI with `uv tool install .` or run it from a checkout with `uv run gateway-guardian`. The service reads `~/.config/gateway-guardian/config.toml` and monitors every enabled profile. Each profile keeps isolated state, logs, repair attempts, rollback metadata, cooldowns, and optional LLM repair output.
 
 ## Features
 
 - **Multi-profile supervision** — one background service monitors all enabled Hermes and OpenClaw profiles
 - **TOML configuration** — one config file at `~/.config/gateway-guardian/config.toml`
-- **Health checks** — healthy profiles are checked every 5 minutes / 300 seconds by default
+- **Health checks** — healthy profiles are checked every 5 minutes / 300 seconds by default; Hermes uses `gateway status --deep`
 - **Auto-repair** — runs the target's repair command, such as `doctor --fix`, before rollback
 - **Git rollback** — rolls a failed profile workspace back to its recorded last-known-good commit
 - **Daily snapshots** — creates one automatic git snapshot per healthy profile per day
@@ -37,7 +37,7 @@ git add -A && git commit -m "initial"
 Configure a Hermes profile and start the single background service:
 
 ```bash
-uv run python scripts/gateway_guardian.py setup \
+gateway-guardian setup \
   --target hermes \
   --profile prod \
   --workspace ~/.hermes/profiles/prod/workspace \
@@ -46,13 +46,13 @@ uv run python scripts/gateway_guardian.py setup \
   --profile-arg prod \
   --start
 
-uv run python scripts/gateway_guardian.py status
+gateway-guardian status
 ```
 
 ## How It Works
 
 ```text
-uv run python scripts/gateway_guardian.py run
+gateway-guardian run
         |
         v
 read ~/.config/gateway-guardian/config.toml
@@ -64,10 +64,10 @@ start one isolated worker per enabled profile
 health check every 300s by default
         |
         v
-doctor repair -> rollback -> optional local LLM repair -> profile cooldown
+doctor repair -> gateway start -> rollback -> optional local LLM repair -> profile cooldown
 ```
 
-The default healthy check interval is `300` seconds. Set `default_check_interval_seconds` globally, or `check_interval_seconds` on a profile to override it for that profile.
+The default healthy check interval is `300` seconds. Set `default_check_interval_seconds` globally, or `check_interval_seconds` on a profile to override it for that profile. Hermes profiles are checked with `hermes [profile args] gateway status --deep`; stale service definitions, stopped/unloaded gateway services, and `agent-secrets exited 1` are treated as unhealthy even when Hermes exits zero.
 
 
 ## Python and uv
@@ -76,30 +76,30 @@ This repository is a uv-managed Python project. Gateway Guardian requires Python
 
 ```bash
 uv sync
-uv run python scripts/gateway_guardian.py --help
+uv run gateway-guardian --help
 uv run python -m unittest tests.gateway_guardian_tests
 ```
 
-Use `uv run python scripts/gateway_guardian.py ...` for local development and setup so the service is installed from the same Python environment.
+Use `uv run gateway-guardian ...` for local development. For host installs, run `uv tool install .` from this checkout, then use `gateway-guardian ...`.
 
 ## CLI Reference
 
 ```bash
-uv run python scripts/gateway_guardian.py setup [--target hermes|openclaw] [--profile NAME] [--workspace PATH] [--cli PATH] [--profile-arg ARG]... [--start]
-uv run python scripts/gateway_guardian.py run [--config PATH]
-uv run python scripts/gateway_guardian.py start [--config PATH]
-uv run python scripts/gateway_guardian.py stop [--config PATH]
-uv run python scripts/gateway_guardian.py restart [--config PATH]
-uv run python scripts/gateway_guardian.py reload [--config PATH]
-uv run python scripts/gateway_guardian.py status [--config PATH]
+gateway-guardian setup [--target hermes|openclaw] [--profile NAME] [--workspace PATH] [--cli PATH] [--profile-arg ARG]... [--start]
+gateway-guardian run [--config PATH]
+gateway-guardian start [--config PATH]
+gateway-guardian stop [--config PATH]
+gateway-guardian restart [--config PATH]
+gateway-guardian reload [--config PATH]
+gateway-guardian status [--config PATH]
 
-uv run python scripts/gateway_guardian.py config show [--config PATH]
-uv run python scripts/gateway_guardian.py config set [--config PATH] KEY=VALUE [...]
+gateway-guardian config show [--config PATH]
+gateway-guardian config set [--config PATH] KEY=VALUE [...]
 
-uv run python scripts/gateway_guardian.py profile add [--config PATH] --target hermes|openclaw --profile NAME --workspace PATH --cli PATH [--profile-arg ARG]...
-uv run python scripts/gateway_guardian.py profile list [--config PATH]
-uv run python scripts/gateway_guardian.py profile set [--config PATH] PROFILE_ID KEY=VALUE [...]
-uv run python scripts/gateway_guardian.py profile remove [--config PATH] PROFILE_ID
+gateway-guardian profile add [--config PATH] --target hermes|openclaw --profile NAME --workspace PATH --cli PATH [--profile-arg ARG]...
+gateway-guardian profile list [--config PATH]
+gateway-guardian profile set [--config PATH] PROFILE_ID KEY=VALUE [...]
+gateway-guardian profile remove [--config PATH] PROFILE_ID
 ```
 
 `start` installs or starts one host service for the supervisor. `reload` asks that running supervisor to re-read the TOML config and add, update, disable, or remove profile workers without creating separate services.
@@ -189,8 +189,8 @@ Gateway Guardian records the current commit as last-known-good only while a prof
 Set a Discord webhook URL through the CLI:
 
 ```bash
-uv run python scripts/gateway_guardian.py config set 'notifications.discord.webhook_url=https://discord.com/api/webhooks/...'
-uv run python scripts/gateway_guardian.py reload
+gateway-guardian config set 'notifications.discord.webhook_url=https://discord.com/api/webhooks/...'
+gateway-guardian reload
 ```
 
 When `notifications.discord.webhook_url` is not empty, Gateway Guardian sends a webhook when:
@@ -206,8 +206,8 @@ Repeated checks of an already-failed profile do not send duplicate failure alert
 LLM repair is disabled by default and requires both global and per-profile opt-in:
 
 ```bash
-uv run python scripts/gateway_guardian.py config set llm.enabled=true llm.provider=codex
-uv run python scripts/gateway_guardian.py profile set hermes-prod llm_enabled=true
+gateway-guardian config set llm.enabled=true llm.provider=codex
+gateway-guardian profile set hermes-prod llm_enabled=true
 ```
 
 Supported providers:
@@ -222,9 +222,9 @@ Customize prompts in `[llm.codex].prompt` and `[llm.claude].prompt`. Gateway Gua
 Use the CLI for service and profile state:
 
 ```bash
-uv run python scripts/gateway_guardian.py status
-uv run python scripts/gateway_guardian.py config show
-uv run python scripts/gateway_guardian.py profile list
+gateway-guardian status
+gateway-guardian config show
+gateway-guardian profile list
 ```
 
 Supervisor and profile logs live under the configured `log_dir`, with per-profile state under `state_dir`.
