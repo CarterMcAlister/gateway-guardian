@@ -1,9 +1,11 @@
+import http.server
 import json
 import os
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import textwrap
 import tomllib
 import unittest
@@ -26,6 +28,31 @@ def gateway_command():
 def write_executable(path, body):
     path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def start_webhook_server():
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            requests.append(
+                {
+                    "path": self.path,
+                    "headers": dict(self.headers),
+                    "body": self.rfile.read(length),
+                }
+            )
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, requests, f"http://127.0.0.1:{server.server_port}/webhook"
 
 
 class GatewayGuardianTestCase(unittest.TestCase):
@@ -90,6 +117,39 @@ class GatewayGuardianTestCase(unittest.TestCase):
                 sys.exit(0 if os.path.exists(os.path.join(cwd, "healthy")) else 1)
             if "doctor" in sys.argv:
                 sys.exit(0 if os.path.exists(os.path.join(cwd, "doctor_ok")) else 1)
+            if "gateway" in sys.argv:
+                if not os.path.exists(os.path.join(cwd, "healthy")):
+                    sys.exit(1)
+                stop = False
+                def handler(_sig, _frame):
+                    global stop
+                    stop = True
+                signal.signal(signal.SIGTERM, handler)
+                deadline = time.time() + 2
+                while not stop and time.time() < deadline:
+                    time.sleep(0.05)
+                sys.exit(0)
+            sys.exit(0)
+            """,
+        )
+        return script
+
+    def write_doctor_repair_target(self, name):
+        script = self.bin / name
+        write_executable(
+            script,
+            """\
+            #!/usr/bin/env python3
+            import os, signal, sys, time
+            cwd = os.getcwd()
+            with open(os.path.join(cwd, f"{os.path.basename(sys.argv[0])}.argv"), "a", encoding="utf-8") as fh:
+                fh.write(" ".join(sys.argv[1:]) + "\\n")
+            if "status" in sys.argv:
+                sys.exit(0 if os.path.exists(os.path.join(cwd, "healthy")) else 1)
+            if "doctor" in sys.argv:
+                with open(os.path.join(cwd, "healthy"), "w", encoding="utf-8") as fh:
+                    fh.write("1")
+                sys.exit(0)
             if "gateway" in sys.argv:
                 if not os.path.exists(os.path.join(cwd, "healthy")):
                     sys.exit(1)
@@ -234,7 +294,7 @@ class GatewayGuardianTestCase(unittest.TestCase):
             (workspace / "healthy").write_text("1", encoding="utf-8")
         return workspace
 
-    def write_config(self, profiles, llm_enabled=False, provider="codex", codex="codex", claude="claude"):
+    def write_config(self, profiles, llm_enabled=False, provider="codex", codex="codex", claude="claude", webhook_url=""):
         self.config.parent.mkdir(parents=True, exist_ok=True)
         profile_blocks = []
         for profile in profiles:
@@ -265,7 +325,7 @@ class GatewayGuardianTestCase(unittest.TestCase):
                 log_dir = "{self.state_home / 'gateway-guardian' / 'logs'}"
 
                 [notifications.discord]
-                webhook_url = ""
+                webhook_url = {json.dumps(webhook_url)}
 
                 [llm]
                 enabled = {str(llm_enabled).lower()}
@@ -503,6 +563,85 @@ class GatewayGuardianWorkerTests(GatewayGuardianTestCase):
         reset_calls = [json.loads(line) for line in calls if json.loads(line)[:2] == ["reset", "--hard"]]
         self.assertIn(["reset", "--hard", "recorded-good"], reset_calls)
         self.assertNotIn(["reset", "--hard", "old"], reset_calls)
+
+
+class GatewayGuardianNotificationTests(GatewayGuardianTestCase):
+    def test_discord_webhook_reports_unhealthy_and_recovery_once_per_incident(self):
+        self.write_fake_git()
+        server, requests, webhook_url = start_webhook_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        hermes = self.write_doctor_repair_target("hermes")
+        workspace = self.init_workspace("hermes-prod", head="good", healthy=False)
+        self.write_config(
+            [
+                {
+                    "id": "hermes-prod",
+                    "target": "hermes",
+                    "profile": "prod",
+                    "workspace": str(workspace),
+                    "command": str(hermes),
+                }
+            ],
+            webhook_url=webhook_url,
+        )
+
+        self.run_worker_once("hermes-prod")
+
+        payloads = [json.loads(request["body"].decode("utf-8")) for request in requests]
+        titles = [payload["embeds"][0]["title"] for payload in payloads]
+        self.assertEqual(
+            titles,
+            [
+                "Gateway Guardian detected an unhealthy profile",
+                "Gateway Guardian recovered a profile",
+            ],
+        )
+        self.assertEqual(payloads[0]["embeds"][0]["fields"][0]["value"], "hermes-prod")
+        self.assertIn("doctor repair", payloads[1]["embeds"][0]["description"])
+        state = self.state_home / "gateway-guardian" / "profiles" / "hermes-prod"
+        self.assertEqual((state / "notification-status").read_text(encoding="utf-8").strip(), "healthy")
+
+        self.run_worker_once("hermes-prod")
+        self.assertEqual(len(requests), 2)
+
+    def test_discord_webhook_reports_unrepaired_failure_without_repeating_alerts(self):
+        self.write_fake_git()
+        server, requests, webhook_url = start_webhook_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        hermes = self.write_fake_target("hermes")
+        workspace = self.init_workspace("hermes-prod", head="bad", healthy=False)
+        self.write_config(
+            [
+                {
+                    "id": "hermes-prod",
+                    "target": "hermes",
+                    "profile": "prod",
+                    "workspace": str(workspace),
+                    "command": str(hermes),
+                    "rollback_enabled": False,
+                }
+            ],
+            webhook_url=webhook_url,
+        )
+
+        self.run_worker_once("hermes-prod", check=False)
+
+        payloads = [json.loads(request["body"].decode("utf-8")) for request in requests]
+        titles = [payload["embeds"][0]["title"] for payload in payloads]
+        self.assertEqual(
+            titles,
+            [
+                "Gateway Guardian detected an unhealthy profile",
+                "Gateway Guardian could not repair a profile",
+            ],
+        )
+        state = self.state_home / "gateway-guardian" / "profiles" / "hermes-prod"
+        self.assertEqual((state / "notification-status").read_text(encoding="utf-8").strip(), "failed")
+
+        self.run_worker_once("hermes-prod", check=False)
+        self.assertEqual(len(requests), 2)
 
 
 class GatewayGuardianLlmTests(GatewayGuardianTestCase):

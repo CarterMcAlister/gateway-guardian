@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -411,6 +413,26 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def post_discord_webhook(url: str, payload: dict[str, Any], *, timeout: int = 10) -> tuple[bool, str]:
+    data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "gateway-guardian/1"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.getcode()
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:
+        return False, exc.__class__.__name__
+    if 200 <= status < 300:
+        return True, ""
+    return False, f"HTTP {status}"
+
+
 class Worker:
     def __init__(self, cfg: dict[str, Any], profile: dict[str, Any]):
         self.cfg = cfg
@@ -421,12 +443,82 @@ class Worker:
         self.gateway_pid = self.state / "gateway.pid"
         self.last_good = self.state / "last-good-commit"
         self.last_backup = self.state / "last-backup-date"
+        self.notification_status = self.state / "notification-status"
         self.stop = False
 
     def log_line(self, message: str) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
         with self.log.open("a", encoding="utf-8") as fh:
             fh.write(f"[{dt.datetime.now().isoformat(timespec='seconds')}] {message}\n")
+
+    def discord_webhook_url(self) -> str:
+        return str(self.cfg.get("notifications", {}).get("discord", {}).get("webhook_url", "")).strip()
+
+    def read_notification_status(self) -> str:
+        try:
+            return self.notification_status.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def write_notification_status(self, status: str) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        self.notification_status.write_text(status + "\n", encoding="utf-8")
+
+    def notify_discord(self, title: str, description: str, *, color: int) -> None:
+        url = self.discord_webhook_url()
+        if not url:
+            return
+        payload = {
+            "username": "Gateway Guardian",
+            "embeds": [
+                {
+                    "title": title,
+                    "description": description,
+                    "color": color,
+                    "timestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "fields": [
+                        {"name": "Profile", "value": self.profile["id"], "inline": True},
+                        {"name": "Target", "value": self.profile["target"], "inline": True},
+                        {"name": "Workspace", "value": str(self.workspace), "inline": False},
+                    ],
+                }
+            ],
+        }
+        ok, detail = post_discord_webhook(url, payload)
+        if not ok:
+            self.log_line(f"discord webhook failed: {detail}")
+
+    def mark_unhealthy(self) -> None:
+        previous = self.read_notification_status()
+        if previous == "failed":
+            return
+        if previous not in {"unhealthy", "failed"}:
+            self.notify_discord(
+                "Gateway Guardian detected an unhealthy profile",
+                "Health check failed and automatic repair is starting.",
+                color=0xFEE75C,
+            )
+        self.write_notification_status("unhealthy")
+
+    def mark_healthy(self, detail: str) -> None:
+        previous = self.read_notification_status()
+        if previous in {"unhealthy", "failed"}:
+            self.notify_discord(
+                "Gateway Guardian recovered a profile",
+                detail,
+                color=0x57F287,
+            )
+        self.write_notification_status("healthy")
+
+    def mark_repair_failed(self) -> None:
+        previous = self.read_notification_status()
+        if previous != "failed":
+            self.notify_discord(
+                "Gateway Guardian could not repair a profile",
+                "Doctor repair, rollback, and configured LLM repair did not restore health.",
+                color=0xED4245,
+            )
+        self.write_notification_status("failed")
 
     def target_cmd(self, *tail: str) -> list[str]:
         return [self.profile["command"], *self.profile["args"], *tail]
@@ -587,18 +679,23 @@ class Worker:
 
     def repair_flow(self, *, cooldown: bool = True) -> bool:
         self.log_line("profile unhealthy; starting repair")
+        self.mark_unhealthy()
         attempts = int(self.cfg.get("max_repair_attempts", 3))
         for _ in range(attempts):
             self.doctor()
             self.start_gateway()
             if self.is_healthy():
                 self.record_last_good()
+                self.mark_healthy("Profile health was restored by the target doctor repair flow.")
                 return True
         if self.rollback():
             self.record_last_good()
+            self.mark_healthy("Profile health was restored by git rollback to the last-known-good commit.")
             return True
         if self.llm_repair():
+            self.mark_healthy("Profile health was restored by configured local LLM repair.")
             return True
+        self.mark_repair_failed()
         if cooldown:
             time.sleep(int(self.cfg.get("cooldown_seconds", 300)))
         return False
@@ -607,6 +704,7 @@ class Worker:
         if self.is_healthy():
             self.record_last_good()
             self.daily_backup()
+            self.mark_healthy("Profile health check passed.")
             if wait_when_healthy:
                 interval = self.profile.get("check_interval_seconds") or self.cfg["default_check_interval_seconds"]
                 for _ in range(int(interval)):

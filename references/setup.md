@@ -144,6 +144,17 @@ uv run python scripts/gateway_guardian.py profile set hermes-prod enabled=false
 
 Healthy profiles are checked every 300 seconds by default. `default_check_interval_seconds` sets the global default; profile `check_interval_seconds` overrides it.
 
+## Configure Discord alerts
+
+If the user provides a Discord webhook URL, set it through the CLI and reload the single supervisor:
+
+```bash
+uv run python scripts/gateway_guardian.py config set 'notifications.discord.webhook_url=https://discord.com/api/webhooks/...'
+uv run python scripts/gateway_guardian.py reload
+```
+
+When configured, Gateway Guardian sends Discord webhooks when a profile first becomes unhealthy and repair starts, when a previously unhealthy or failed profile recovers, and when all repair paths fail. It does not send healthy startup alerts or repeated failure alerts for the same unresolved incident.
+
 ## Enable local LLM repair only with consent
 
 LLM repair is disabled by default and requires both global and per-profile opt-in.
@@ -186,4 +197,5 @@ Confirm:
 - one supervisor service is running;
 - each enabled profile appears in `status`;
 - each workspace has a git repository if rollback is enabled;
-- LLM repair is disabled unless the user opted in.
+- LLM repair is disabled unless the user opted in;
+- Discord webhook URL is empty unless the user provided one.

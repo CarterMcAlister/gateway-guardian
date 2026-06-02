@@ -12,7 +12,7 @@ Run the CLI through uv with `uv run python scripts/gateway_guardian.py`. The ser
 - **Auto-repair** — runs the target's repair command, such as `doctor --fix`, before rollback
 - **Git rollback** — rolls a failed profile workspace back to its recorded last-known-good commit
 - **Daily snapshots** — creates one automatic git snapshot per healthy profile per day
-- **Optional alerts** — supports notification settings in config
+- **Optional Discord alerts** — sends incident, recovery, and repair-failure webhooks when configured
 - **Optional local LLM repair** — Codex or Claude can attempt last-resort repair when explicitly enabled
 
 ## Quick Start
@@ -183,6 +183,23 @@ git -C ~/.hermes/profiles/prod/workspace config user.name "Guardian"
 ```
 
 Gateway Guardian records the current commit as last-known-good only while a profile is healthy, then rolls back to that exact commit if repair fails. Without git, Guardian can still monitor and run target repair, but rollback is skipped.
+
+## Discord Alerts
+
+Set a Discord webhook URL through the CLI:
+
+```bash
+uv run python scripts/gateway_guardian.py config set 'notifications.discord.webhook_url=https://discord.com/api/webhooks/...'
+uv run python scripts/gateway_guardian.py reload
+```
+
+When `notifications.discord.webhook_url` is not empty, Gateway Guardian sends a webhook when:
+
+- a previously healthy or unknown profile becomes unhealthy and repair starts;
+- a previously unhealthy or failed profile recovers;
+- doctor repair, rollback, and configured LLM repair all fail to restore health.
+
+Repeated checks of an already-failed profile do not send duplicate failure alerts. Healthy startup checks do not send alerts.
 
 ## Local LLM Repair
 
