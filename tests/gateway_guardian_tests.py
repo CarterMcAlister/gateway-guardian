@@ -616,7 +616,7 @@ class GatewayGuardianWorkerTests(GatewayGuardianTestCase):
         log = (state / "repair.log").read_text(encoding="utf-8")
         calls = (workspace / "hermes.argv").read_text(encoding="utf-8")
         self.assertIn("agent-secrets exited 1", log)
-        self.assertIn("hermes gateway health failed: agent-secrets exited 1", log)
+        self.assertIn("hermes gateway health failed: agent-secrets exited ", log)
         self.assertIn("--profile prod gateway start", calls)
 
     def test_daily_backup_marker_is_not_updated_after_failed_commit(self):

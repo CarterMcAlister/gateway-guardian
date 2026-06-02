@@ -538,7 +538,7 @@ class Worker:
         output = result.stdout or ""
         unhealthy_markers = (
             "Service definition is stale relative to the current Hermes install",
-            "agent-secrets exited 1",
+            "agent-secrets exited ",
             "Gateway service is not loaded",
             "Gateway service not loaded",
             "Gateway service is not running",
@@ -877,6 +877,10 @@ def service_args(config: Path) -> list[str]:
     return args
 
 
+def service_environment() -> dict[str, str]:
+    return {"PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+
+
 def detect_backend() -> str:
     if platform.system() == "Linux" and shutil.which("systemctl"):
         result = subprocess.run(["systemctl", "--user", "is-system-running"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -898,7 +902,7 @@ def service_start(args: argparse.Namespace) -> None:
         user_dir = Path.home() / ".config" / "systemd" / "user"
         user_dir.mkdir(parents=True, exist_ok=True)
         service = user_dir / "gateway-guardian.service"
-        service.write_text("[Unit]\nDescription=Gateway Guardian\n\n[Service]\nExecStart=" + " ".join(service_args(args.config)) + "\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n", encoding="utf-8")
+        service.write_text("[Unit]\nDescription=Gateway Guardian\n\n[Service]\nEnvironment=PATH=" + service_environment()["PATH"] + "\nExecStart=" + " ".join(service_args(args.config)) + "\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n", encoding="utf-8")
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
         subprocess.run(["systemctl", "--user", "enable", "--now", "gateway-guardian.service"], check=False)
     elif backend == "launchd":
@@ -910,6 +914,7 @@ def service_start(args: argparse.Namespace) -> None:
             "ProgramArguments": service_args(args.config),
             "RunAtLoad": True,
             "KeepAlive": True,
+            "EnvironmentVariables": service_environment(),
             "StandardOutPath": str(expand_path(cfg["log_dir"]) / "supervisor.log"),
             "StandardErrorPath": str(expand_path(cfg["log_dir"]) / "supervisor.log"),
         }))
